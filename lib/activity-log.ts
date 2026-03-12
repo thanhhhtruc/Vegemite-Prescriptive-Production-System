@@ -1,17 +1,25 @@
 export type InferenceEvent = {
   id: string
   timestamp: string // ISO
-  ffteSP: number
-  tfeSP: number
-  extractTankSP: number
+  ffteFeedSolidsSP: number
+  ffteProductionSolidsSP: number
+  ffteSteamPressureSP: number
+  tfeOutFlowSP: number
+  tfeProductionSolidsSP: number
+  tfeVacuumPressureSP: number
+  tfeSteamPressureSP: number
   prediction: 'GOOD' | 'LOW_BAD' | 'HIGH_BAD'
   pGood: number        // 0.0–1.0
   pDowntime: number    // 0.0–1.0
   downtimeRisk: number // 0–100
   recommended: {
-    ffteSP: number
-    tfeSP: number
-    extractTankSP: number
+    ffteFeedSolidsSP: number
+    ffteProductionSolidsSP: number
+    ffteSteamPressureSP: number
+    tfeOutFlowSP: number
+    tfeProductionSolidsSP: number
+    tfeVacuumPressureSP: number
+    tfeSteamPressureSP: number
   }
 }
 

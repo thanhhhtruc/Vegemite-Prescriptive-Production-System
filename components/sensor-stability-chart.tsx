@@ -41,21 +41,27 @@ export function SensorStabilityChart({ pGood, pDowntime, dataTimestamp }: Sensor
 
   // Accumulate new points whenever inference result changes
   useEffect(() => {
-    if (pGood === undefined || pDowntime === undefined) return
+    if (pGood == null || pDowntime == null) return
 
-    tickRef.current++
+    console.debug(`[Chart] Adding point: pGood=${pGood}, pDT=${pDowntime}, ts=${dataTimestamp}`)
+
     // Use data timestamp if available, otherwise fall back to client time
     const label = dataTimestamp
       ? dataTimestamp.replace(/^\d+\/\d+\/\d+ /, '') // strip date, keep HH:MM
-      : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+      : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 
     setSeries((prev) => {
+      // Avoid duplicate timestamps if they come too fast
+      if (prev.length > 0 && prev[prev.length - 1].time === label && prev[prev.length - 1].pGood === pGood * 100) {
+        return prev
+      }
+
       const next = [
         ...prev,
         {
           time: label,
-          pGood: parseFloat((pGood * 100).toFixed(1)),
-          pDowntime: parseFloat((pDowntime * 100).toFixed(1)),
+          pGood: Number((pGood * 100).toFixed(1)),
+          pDowntime: Number((pDowntime * 100).toFixed(1)),
         },
       ]
       return next.slice(-MAX_POINTS)
@@ -71,11 +77,9 @@ export function SensorStabilityChart({ pGood, pDowntime, dataTimestamp }: Sensor
         </CardDescription>
       </CardHeader>
       <CardContent className="p-4 pt-0 flex-1 min-h-0">
-        {series.length < 2 ? (
+        {series.length === 0 ? (
           <div className="flex items-center justify-center h-full min-h-[300px] text-muted-foreground text-sm">
-            {series.length === 0
-              ? 'Waiting for first inference…'
-              : 'Collecting data…'}
+            Waiting for first inference…
           </div>
         ) : (
           <ChartContainer config={chartConfig} className="aspect-auto h-full min-h-[300px] w-full">

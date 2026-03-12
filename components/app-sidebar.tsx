@@ -7,10 +7,7 @@ import {
   LayoutDashboard,
   Settings,
   HelpCircle,
-  Search,
   User,
-  CreditCard,
-  Bell,
   LogOut,
   MoreHorizontal,
   Table,
@@ -36,7 +33,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { useSearch } from '@/context/search-context'
 
 const USER = {
   name: 'Minh Hoang',
@@ -48,7 +44,6 @@ const USER = {
 export function AppSidebar() {
   const pathname = usePathname()
   const router = useRouter()
-  const { openSearch } = useSearch()
 
   return (
     <Sidebar collapsible="icon" className="border-r border-sidebar-border">
@@ -110,12 +105,6 @@ export function AppSidebar() {
                 <HelpCircle className="size-4" />
                 <span>Get Help</span>
               </Link>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-          <SidebarMenuItem>
-            <SidebarMenuButton tooltip="Search" onClick={openSearch}>
-              <Search className="size-4" />
-              <span>Search</span>
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>

@@ -91,17 +91,25 @@ export async function POST(request: NextRequest) {
     // Log inference for overview / activity / charts
     try {
       logInference({
-        ffteSP: Number(body.ffteFeedSolidsSP) || 0,
-        tfeSP: Number(body.tfeProductionSolidsSP) || 0,
-        extractTankSP: Number(body.tfeSteamPressureSP) || 0,
+        ffteFeedSolidsSP: Number(body.ffteFeedSolidsSP) || 0,
+        ffteProductionSolidsSP: Number(body.ffteProductionSolidsSP) || 0,
+        ffteSteamPressureSP: Number(body.ffteSteamPressureSP) || 0,
+        tfeOutFlowSP: Number(body.tfeOutFlowSP) || 0,
+        tfeProductionSolidsSP: Number(body.tfeProductionSolidsSP) || 0,
+        tfeVacuumPressureSP: Number(body.tfeVacuumPressureSP) || 0,
+        tfeSteamPressureSP: Number(body.tfeSteamPressureSP) || 0,
         prediction: result.prediction,
         pGood: result.pGood,
         pDowntime: result.pDowntime,
         downtimeRisk: result.downtimeRisk,
         recommended: {
-          ffteSP: result.recommendedSP.ffteFeedSolidsSP,
-          tfeSP: result.recommendedSP.tfeProductionSolidsSP,
-          extractTankSP: result.recommendedSP.tfeSteamPressureSP,
+          ffteFeedSolidsSP: result.recommendedSP.ffteFeedSolidsSP,
+          ffteProductionSolidsSP: result.recommendedSP.ffteProductionSolidsSP,
+          ffteSteamPressureSP: result.recommendedSP.ffteSteamPressureSP,
+          tfeOutFlowSP: result.recommendedSP.tfeOutFlowSP,
+          tfeProductionSolidsSP: result.recommendedSP.tfeProductionSolidsSP,
+          tfeVacuumPressureSP: result.recommendedSP.tfeVacuumPressureSP,
+          tfeSteamPressureSP: result.recommendedSP.tfeSteamPressureSP,
         },
       })
     } catch (e) {

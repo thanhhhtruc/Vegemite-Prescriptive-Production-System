@@ -54,9 +54,13 @@ export async function GET(request: NextRequest) {
       
       return {
         time: timeLabel,
-        ffte: Number(e.ffteSP.toFixed(1)),
-        tfe: Number(e.tfeSP.toFixed(1)),
-        extract: Number(e.extractTankSP.toFixed(1)),
+        ffteFeedSolids: Number(e.ffteFeedSolidsSP.toFixed(1)),
+        ffteProdSolids: Number(e.ffteProductionSolidsSP.toFixed(1)),
+        ffteSteam: Number(e.ffteSteamPressureSP.toFixed(1)),
+        tfeFlow: Number(e.tfeOutFlowSP.toFixed(1)),
+        tfeProdSolids: Number(e.tfeProductionSolidsSP.toFixed(1)),
+        tfeVacuum: Number(e.tfeVacuumPressureSP.toFixed(1)),
+        tfeSteam: Number(e.tfeSteamPressureSP.toFixed(1)),
       }
     })
 

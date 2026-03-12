@@ -139,7 +139,7 @@ export default function DashboardPage() {
         {/* Header */}
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h1 className="text-xl font-semibold tracking-tight text-foreground">Production overview</h1>
+            <h1 className="text-xl font-semibold tracking-tight text-foreground">Production Dashboard</h1>
             <p className="mt-0.5 text-sm text-muted-foreground">
               Quality prediction, downtime risk &amp; setpoint recommendations
             </p>
