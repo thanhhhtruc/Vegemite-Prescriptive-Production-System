@@ -1,3 +1,4 @@
+
 """
 Production Serving Script – Academic Revision
 Backend logic for the Vegemite Prescriptive Production System.
@@ -58,7 +59,7 @@ class FeatureEngineer:
             df_combined = df_cand.copy()
 
         # 3. Dynamic Feature Generation (aligned with fuse_data_notebook.py)
-        # SOTA V7.3+ uses suffix _roll3 and _diff
+        # SOTA V7.3+ uses suffix _roll3, _diff, _lag1, and _lag3
         sensor_cols = [c for c in df_combined.columns if any(x in c for x in [' PV', ' Level', ' speed', ' SP'])]
         
         # Limit to first 20 as in notebook to prevent feature explosion
@@ -67,13 +68,16 @@ class FeatureEngineer:
             df_combined[f'{col}_roll3'] = df_combined[col].rolling(3, min_periods=1).mean()
             # First-order difference
             df_combined[f'{col}_diff'] = df_combined[col].diff().fillna(0)
+            # Lags (capture preemptive patterns)
+            df_combined[f'{col}_lag1'] = df_combined[col].shift(1).bfill()
+            df_combined[f'{col}_lag3'] = df_combined[col].shift(3).bfill()
             
         # 4. Extract only the last row (the candidate) and align columns
         final_row = df_combined.tail(1).copy()
         
-        # Ensure all columns expected by the model exist (fill with medians if missing)
+        # 5. Ensure all columns expected by the model exist and fill NaNs
         for col in use_cols:
-            if col not in final_row.columns:
+            if col not in final_row.columns or pd.isna(final_row[col].iloc[0]):
                 final_row[col] = medians.get(col, 0.0)
                 
         return final_row[use_cols]
@@ -131,7 +135,11 @@ class VegemiteServer:
 
     def get_model(self, part):
         """Dynamic routing to specialist or global model."""
-        return self.m1_parts.get(part, self.m1_global)
+        m = self.m1_parts.get(part, self.m1_global)
+        if m is None:
+            # Fallback to global if specialist failed to load
+            return self.m1_global
+        return m
 
     def optimize_sp(self, base_row, part, history_df):
         """Joint grid search optimization for best SP combination."""
@@ -141,14 +149,13 @@ class VegemiteServer:
         le_q = self.artifacts.get('le_q')
         
         if not sp_cols or not le_q:
-            return {}, 0.0, 0.0
+            return {k: base_row.get(v, medians.get(v, 0.0)) for k, v in UI_TO_SP.items()}, 0.0, 0.0
 
         # Optimization Parameters
         n_grid = 3 # 3^3 combinations for 3 most important SPs to stay responsive
         lambda_penalty = 0.4 # Weight for downtime avoidance
         
-        # Select top 3 SPs to optimize (grid search on 7 at once is too slow: 3^7 = 2187 iterations)
-        # We focus on the core TFE and FFTE solids/pressure SPs
+        # Select top 3 SPs to optimize
         target_sp = [c for c in UI_TO_SP.values() if c in sp_cols][:4]
         
         # Calculate bounds from medians if history not enough
@@ -158,11 +165,13 @@ class VegemiteServer:
             ranges[c] = np.linspace(val * 0.9, val * 1.1, n_grid)
 
         best_score = -999.0
-        best_sp = {k: base_row.get(v, medians.get(v, 0.0)) for k, v in UI_TO_SP.items()}
+        best_sp_vals = {k: base_row.get(v, medians.get(v, 0.0)) for k, v in UI_TO_SP.items()}
         best_p_good = 0.0
         best_p_dt = 0.0
         
         model = self.get_model(part)
+        if model is None: return best_sp_vals, 0.0, 0.0
+        
         good_idx = list(le_q.classes_).index('good') if 'good' in le_q.classes_ else 0
 
         # Perform Grid Search
@@ -187,13 +196,13 @@ class VegemiteServer:
                     best_p_good = pg
                     best_p_dt = p_dt
                     for k, v in zip(keys, values):
-                        best_sp[k] = v
+                        # Find the UI key for this SP col
+                        ui_key = SP_TO_UI_REVERSE(k)
+                        best_sp_vals[ui_key] = v
             except:
                 continue
 
-        # Prepare UI output
-        ui_best_sp = {SP_TO_UI_REVERSE(k): float(v) for k, v in best_sp.items()}
-        return ui_best_sp, best_p_good, best_p_dt
+        return best_sp_vals, best_p_good, best_p_dt
 
 def SP_TO_UI_REVERSE(col_name):
     # Simple reverse mapping
@@ -220,50 +229,78 @@ def main():
     use_cols = server.artifacts.get('use_cols', [])
     le_q = server.artifacts.get('le_q')
     
-    # Build base feature row
-    current_row = medians.copy()
-    for ui_key, col_name in UI_TO_SP.items():
-        if ui_key in body:
-            current_row[col_name] = float(body[ui_key])
-    
-    # Include any raw sensor data if provided
-    sensors = body.get("sensors", {})
-    if isinstance(sensors, dict):
-        for k, v in sensors.items():
-            if k in current_row: current_row[k] = float(v)
+    # ── Robust Inference Loop ─────────────────────────────────────────────
+    try:
+        # Build base feature row
+        current_row = medians.copy()
+        for ui_key, col_name in UI_TO_SP.items():
+            if ui_key in body:
+                current_row[col_name] = float(body[ui_key])
+        
+        # Include any raw sensor data if provided
+        sensors = body.get("sensors", {})
+        if isinstance(sensors, dict):
+            for k, v in sensors.items():
+                if k in current_row: current_row[k] = float(v)
 
-    # Contextual history for rolling features (placeholder if real-time history not available)
-    # in a real system, you'd query the DB for the last 5 batches of 'part'
-    history_df = None 
+        # Contextual history for rolling features (placeholder)
+        history_df = None 
 
-    # 1. Prediction for Current Settings
-    X_curr = FeatureEngineer.compute_for_row(current_row, history_df, use_cols, medians)
-    model = server.get_model(part)
-    
-    p_vec = model.predict_proba(X_curr)[0]
-    pred_idx = int(np.argmax(p_vec))
-    pred_label = str(le_q.inverse_transform([pred_idx])[0]).upper() if le_q else "UNKNOWN"
-    
-    good_idx = list(le_q.classes_).index('good') if le_q and 'good' in le_q.classes_ else 0
-    p_good = float(p_vec[good_idx])
-    
-    p_dt = 0.0
-    if server.m2_downtime:
-        p_dt = float(server.m2_downtime.predict_proba(X_curr)[0][1])
+        # 1. Prediction for Current Settings
+        X_curr = FeatureEngineer.compute_for_row(current_row, history_df, use_cols, medians)
+        model = server.get_model(part)
+        
+        if model is None:
+            raise ValueError("Model not found in any search path.")
+            
+        p_vec = model.predict_proba(X_curr)[0]
+        
+        # SOTA V7.3: Threshold-Aware Prediction
+        classes = list(le_q.classes_) if le_q else []
+        low_bad_idx = classes.index('low_bad') if 'low_bad' in classes else -1
+        
+        thresh = 0.35
+        if low_bad_idx != -1 and p_vec[low_bad_idx] >= thresh:
+            pred_label = "LOW_BAD"
+        else:
+            pred_idx = int(np.argmax(p_vec))
+            pred_label = str(le_q.inverse_transform([pred_idx])[0]).upper() if le_q else "UNKNOWN"
+        
+        good_idx = classes.index('good') if 'good' in classes else 0
+        p_good = float(p_vec[good_idx])
+        
+        p_dt = 0.0
+        if server.m2_downtime:
+            p_dt = float(server.m2_downtime.predict_proba(X_curr)[0][1])
 
-    # 2. Recommended Set Points
-    rec_sp, rec_p_good, rec_p_dt = server.optimize_sp(current_row, part, history_df)
+        # 2. Recommended Set Points
+        rec_sp, rec_p_good, rec_p_dt = server.optimize_sp(current_row, part, history_df)
 
-    # 3. Formulate Response
-    response = {
-        "recommendedSP": {k: float(v) for k, v in rec_sp.items()},
-        "pGood": float(round(p_good, 4)),
-        "pDowntime": float(round(p_dt, 4)),
-        "prediction": pred_label,
-        "downtimeRisk": float(round(p_dt * 100, 2)),
-        "recommendedPGood": float(round(rec_p_good, 4)),
-        "recommendedPDowntime": float(round(rec_p_dt, 4))
-    }
+        # 3. Formulate Response
+        response = {
+            "recommendedSP": {k: float(v) for k, v in rec_sp.items()},
+            "pGood": float(round(p_good, 4)),
+            "pDowntime": float(round(p_dt, 4)),
+            "prediction": pred_label,
+            "downtimeRisk": float(round(p_dt * 100, 2)),
+            "recommendedPGood": float(round(rec_p_good, 4)),
+            "recommendedPDowntime": float(round(rec_p_dt, 4))
+        }
+    except Exception as e:
+        sys.stderr.write(f"Inference Runtime Error: {e}\n")
+        import traceback
+        traceback.print_exc()
+        # Safe Fallback
+        response = {
+            "error": str(e),
+            "prediction": "ERROR",
+            "pGood": 0.0,
+            "pDowntime": 0.0,
+            "downtimeRisk": 0.0,
+            "recommendedSP": {k: float(medians.get(UI_TO_SP[k], 0.0)) if k in UI_TO_SP else 0.0 for k in UI_TO_SP.keys()},
+            "recommendedPGood": 0.0,
+            "recommendedPDowntime": 0.0
+        }
     
     sys.stdout.write(json.dumps(response, cls=NumpyEncoder))
 

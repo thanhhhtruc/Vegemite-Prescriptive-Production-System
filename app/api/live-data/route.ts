@@ -55,10 +55,18 @@ function loadData() {
   return cachedRows
 }
 
+// ── Critical Sensor Mapping (based on NB Feature Importance) ────────────────
+const CRITICAL_DRIVERS: Record<string, string[]> = {
+  'Yeast - BRN': ['FFTE Feed flow rate PV', 'TFE Out flow SP', 'FFTE Heat temperature 1', 'FFTE Feed solids PV'],
+  'Yeast - BRD': ['TFE Out flow SP', 'FFTE Production solids SP', 'FFTE Heat temperature 1', 'FFTE Steam pressure PV'],
+  'Yeast - FMX': ['FFTE Heat temperature 3', 'FFTE Discharge density', 'TFE Production solids SP', 'FFTE Heat temperature 1'],
+  'default':     ['FFTE Feed flow rate PV', 'FFTE Heat temperature 1', 'FFTE Production solids SP', 'FFTE Discharge density']
+}
+
 export async function GET() {
   try {
     const rows = loadData()
-    const STEP = 10  // advance 10 rows per tick for faster demo cycling
+    const STEP = 100  // advance 100 rows per tick for faster demo cycling
     const row = rows[cursor % rows.length]
     cursor += STEP
 
@@ -71,6 +79,9 @@ export async function GET() {
     // Part (yeast type)
     const part = String(row['Part'] ?? 'Yeast - BRD')
 
+    // Determine critical sensors for this specific part
+    const criticalSensors = CRITICAL_DRIVERS[part] || CRITICAL_DRIVERS['default']
+
     // Sensor readings (pass-through for display)
     const sensors: Record<string, number> = {}
     const sensorCols = [
@@ -82,6 +93,7 @@ export async function GET() {
       'TFE Out flow PV', 'TFE Product out temperature', 'TFE Production solids PV',
       'TFE Production solids density', 'TFE Steam pressure PV',
       'TFE Steam temperature', 'TFE Tank level', 'TFE Temperature', 'TFE Vacuum pressure PV',
+      'TFE Out flow SP', 'FFTE Production solids SP', 'TFE Production solids SP', // High importance SPs
     ]
     for (const col of sensorCols) {
       sensors[col] = Number(row[col] ?? 0)
@@ -94,6 +106,7 @@ export async function GET() {
       part,
       sp,
       sensors,
+      criticalSensors,   // NEW: SOTA direction for the dashboard
       quality: row['quality'],   // ground truth label (for display only)
       batch: row['VYP batch'],
     })

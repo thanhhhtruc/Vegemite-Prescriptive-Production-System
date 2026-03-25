@@ -6,6 +6,7 @@ import { StatusCard } from '@/components/status-card'
 import { RecommendedSP } from '@/components/recommended-sp'
 import { SensorStabilityChart } from '@/components/sensor-stability-chart'
 import { SPDeviationChart } from '@/components/sp-deviation-chart'
+import { CriticalSensors } from '@/components/critical-sensors'
 
 function formatLastUpdated(date: Date) {
   const now = new Date()
@@ -39,6 +40,7 @@ type LiveDataRow = {
   part: string
   sp: Omit<AllSPInputs, 'part'>
   sensors: Record<string, number>
+  criticalSensors: string[]
   quality: string
   batch: string
 }
@@ -155,6 +157,15 @@ export default function DashboardPage() {
               </p>
             )}
           </div>
+        </div>
+
+        {/* SOTA: Critical Sensors based on NB results (Full Width Header) */}
+        <div className="w-full">
+          <CriticalSensors 
+            sensors={liveRow?.sensors ?? {}}
+            criticalSensors={liveRow?.criticalSensors ?? []}
+            loading={!initialized}
+          />
         </div>
 
         {/* Main grid */}
