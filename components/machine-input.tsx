@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
 import { Label } from '@/components/ui/label'
+import { Loader2 } from 'lucide-react'
 import {
   Select,
   SelectContent,
@@ -73,23 +74,42 @@ export function MachineInput({
   loading = false,
   hidePart = false,
 }: MachineInputProps) {
-  const [localInputs, setLocalInputs] = useState(inputs)
+  const [localInputs, setLocalInputs] = useState<any>(inputs)
+  const [isApplying, setIsApplying] = useState(false)
 
   useEffect(() => {
-    if (!isManualMode) setLocalInputs(inputs)
-  }, [inputs, isManualMode])
+    setLocalInputs(inputs)
+    setIsApplying(false)
+  }, [inputs])
 
   const handleInputChange = (key: keyof Omit<AllSPInputs, 'part'>, value: string) => {
-    setLocalInputs((prev) => ({ ...prev, [key]: parseFloat(value) || 0 }))
+    setLocalInputs((prev: any) => ({ ...prev, [key]: value }))
+  }
+
+  const handleBlur = (key: keyof Omit<AllSPInputs, 'part'>) => {
+    setLocalInputs((prev: any) => ({
+      ...prev,
+      [key]: prev[key] === '' || isNaN(Number(prev[key])) ? 0 : Number(prev[key])
+    }))
   }
 
   const handlePartChange = (value: string) => {
-    setLocalInputs((prev) => ({ ...prev, part: value }))
+    setLocalInputs((prev: any) => ({ ...prev, part: value }))
   }
 
   const handleApply = () => {
-    if (setInputs) setInputs(localInputs)
-    if (onToggleManual) onToggleManual()
+    setIsApplying(true)
+    const parsedInputs = { ...localInputs }
+    FIELDS.forEach(({ key }) => {
+      parsedInputs[key] = Number(parsedInputs[key]) || 0
+    })
+    
+    // Simulate a small delay to show the loading animation
+    setTimeout(() => {
+      if (setInputs) setInputs(parsedInputs)
+      if (onToggleManual) onToggleManual()
+      setIsApplying(false)
+    }, 400)
   }
 
   const handleCancel = () => {
@@ -147,6 +167,7 @@ export function MachineInput({
                     type="number"
                     value={localInputs[key]}
                     onChange={(e) => handleInputChange(key, e.target.value)}
+                    onBlur={() => handleBlur(key)}
                     step="0.1"
                     className="h-7 w-full text-base font-bold tabular-nums tracking-tight bg-background px-1.5"
                   />
@@ -167,10 +188,16 @@ export function MachineInput({
         <div className="flex items-center gap-2">
           {isManualMode ? (
             <>
-              <Button size="sm" onClick={handleApply} className="h-8 text-xs">
-                Apply &amp; Run
+              <Button size="sm" onClick={handleApply} disabled={isApplying} className="h-8 text-xs min-w-[100px] transition-all">
+                {isApplying ? (
+                  <>
+                    <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> Fetching...
+                  </>
+                ) : (
+                  <>Apply &amp; Run</>
+                )}
               </Button>
-              <Button size="sm" variant="outline" onClick={handleCancel} className="h-8 text-xs">
+              <Button size="sm" variant="outline" onClick={handleCancel} disabled={isApplying} className="h-8 text-xs">
                 Cancel
               </Button>
             </>
