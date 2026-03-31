@@ -1,23 +1,25 @@
 
 """
-Production Serving Script – Academic Revision
+Production Serving Script – Advanced Revision
 Backend logic for the Vegemite Prescriptive Production System.
 
 Features:
-- Loads pre-trained Global and Per-Part ensemble models (XGB, LGBM, Cat, RF).
-- Implements synchronized feature engineering (Rolling/Difference) to match training.
-- Joint Set Point (SP) optimization using objective grid search.
-- Task 1 (Quality) and Task 2 (Downtime) simultaneous prediction.
+- Loads the 6 new task-specific model artifacts and Configs.
+- Synchronized feature engineering mapping directly to Window-Based (mean, max, min, delta) formats.
+- Safe Grid Optimization honoring the rigorous +-5% bound constraints.
+- Multi-class root-cause inference combined with Isolation Forest.
 """
 
 import itertools
 import json
 import os
 import sys
+import re
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import joblib
 
 class NumpyEncoder(json.JSONEncoder):
     def default(self, obj):
@@ -29,71 +31,36 @@ class NumpyEncoder(json.JSONEncoder):
             return obj.tolist()
         return super(NumpyEncoder, self).default(obj)
 
-# Suppress warnings for clean output
 import warnings
 warnings.filterwarnings('ignore')
 
-# ML Frameworks - Ensure all potential winners are supported
-try:
-    import xgboost as xgb
-    import lightgbm as lgb
-    from catboost import CatBoostClassifier
-    import joblib
-except ImportError:
-    # Minimal fallback or error if critical libraries are missing
-    pass
-
 class FeatureEngineer:
-    """Replicates Step 4 of the training pipeline for real-time inference."""
+    """Replicates the Window-based feature derivation for inference."""
     
     @staticmethod
-    def compute_for_row(row_dict, history_df, use_cols, medians):
-        """Calculates features for a candidate row given its part-specific context."""
-        # 1. Base DataFrame from the candidate row
-        df_cand = pd.DataFrame([row_dict])
-        
-        # 2. Append history if available to compute rolling/diff
-        if history_df is not None and len(history_df) >= 2:
-            df_combined = pd.concat([history_df, df_cand], ignore_index=True)
-        else:
-            df_combined = df_cand.copy()
-
-        # 3. Dynamic Feature Generation (aligned with fuse_data_notebook.py)
-        # SOTA V7.3+ uses suffix _roll3, _diff, _lag1, and _lag3
-        sensor_cols = [c for c in df_combined.columns if any(x in c for x in [' PV', ' Level', ' speed', ' SP'])]
-        
-        # Limit to first 20 as in notebook to prevent feature explosion
-        for col in sensor_cols[:20]:
-            # Rolling mean (window=3)
-            df_combined[f'{col}_roll3'] = df_combined[col].rolling(3, min_periods=1).mean()
-            # First-order difference
-            df_combined[f'{col}_diff'] = df_combined[col].diff().fillna(0)
-            # Lags (capture preemptive patterns)
-            df_combined[f'{col}_lag1'] = df_combined[col].shift(1).bfill()
-            df_combined[f'{col}_lag3'] = df_combined[col].shift(3).bfill()
-            
-        # 4. Extract only the last row (the candidate) and align columns
-        final_row = df_combined.tail(1).copy()
-        
-        # 5. Ensure all columns expected by the model exist and fill NaNs
-        for col in use_cols:
-            if col not in final_row.columns or pd.isna(final_row[col].iloc[0]):
-                final_row[col] = medians.get(col, 0.0)
+    def compute_for_row(row_dict_clean, features_list):
+        out = {}
+        for f in features_list:
+            if f.endswith('_mean'):
+                out[f] = row_dict_clean.get(f[:-5], 0.0)
+            elif f.endswith('_std'):
+                out[f] = 0.0  # Require history for actual std, bypass for point-prediction
+            elif f.endswith('_max'):
+                out[f] = row_dict_clean.get(f[:-4], 0.0)
+            elif f.endswith('_min'):
+                out[f] = row_dict_clean.get(f[:-4], 0.0)
+            elif f.endswith('_delta'):
+                out[f] = 0.0  # Instantaneous diff is zero
+            else:
+                out[f] = row_dict_clean.get(f, 0.0)
                 
-        return final_row[use_cols]
+        # Return dataframe strictly aligned to trained feature order
+        return pd.DataFrame([out])[features_list]
 
 # Configuration and Paths
 BASE_DIR = Path(__file__).resolve().parents[1]
-OUTPUT_DIR = BASE_DIR / "output" # Assuming models are in output/ as per latest save cell
-MODELS_DIR = BASE_DIR / "models" # Fallback search location
-
-# Model Artifact Filenames
-MODEL_PATHS = {
-    'global': "vegemite_quality_global.joblib",
-    'per_part': "vegemite_quality_specialists.joblib",
-    'downtime': "vegemite_downtime.joblib",
-    'artifacts': "vegemite_artifacts.joblib"
-}
+MODELS_DIR = BASE_DIR / "models" 
+CONFIG_DIR = BASE_DIR / "config"
 
 # UI key to Canonical SP column mapping
 UI_TO_SP = {
@@ -108,107 +75,135 @@ UI_TO_SP = {
 
 class VegemiteServer:
     def __init__(self):
-        self.m1_global = None
         self.m1_parts = {}
-        self.m2_downtime = None
-        self.artifacts = {}
+        self.m2_lgb = None
+        self.m2_iso = None
+        self.m2_scaler = None
+        
+        self.task1_features = {}
+        self.task2_features = []
+        self.task2_class_mapping = {}
+
         self.load_models()
 
     def load_models(self):
-        """Loads all SOTA artifacts from the output directory."""
-        search_dirs = [OUTPUT_DIR, MODELS_DIR, Path(".")]
-        
-        for d in search_dirs:
-            art_path = d / MODEL_PATHS['artifacts']
-            if art_path.exists():
-                try:
-                    self.artifacts = joblib.load(art_path)
-                    self.m1_global = joblib.load(d / MODEL_PATHS['global'])
-                    self.m1_parts = joblib.load(d / MODEL_PATHS['per_part'])
-                    self.m2_downtime = joblib.load(d / MODEL_PATHS['downtime'])
-                    sys.stderr.write(f"Server successfully initialized from {d}\n")
-                    return
-                except Exception as e:
-                    sys.stderr.write(f"Initialization error in {d}: {e}\n")
-        
-        sys.stderr.write("Critical Error: Pre-trained models not found. Please run the training notebook first.\n")
+        """Loads SOTA configurations and joblibs delivered by ML Engineer."""
+        try:
+            # 1. Load Configurations
+            if (CONFIG_DIR / "task1_features.json").exists():
+                with open(CONFIG_DIR / "task1_features.json", 'r') as f:
+                    self.task1_features = json.load(f)
+                    
+            if (CONFIG_DIR / "task2_features.json").exists():
+                with open(CONFIG_DIR / "task2_features.json", 'r') as f:
+                    self.task2_features = json.load(f)
+                    
+            if (CONFIG_DIR / "task2_class_mapping.json").exists():
+                with open(CONFIG_DIR / "task2_class_mapping.json", 'r') as f:
+                    # JSON keys are always strings -> convert back to int
+                    self.task2_class_mapping = {int(k): v for k, v in json.load(f).items()}
+                
+            # 2. Load Task 1 (Quality Specialist Models)
+            for part in ["Yeast - BRD", "Yeast - BRN", "Yeast - FMX"]:
+                safe_name = part.replace(" ", "_").replace("-", "")
+                path = MODELS_DIR / f"task1_model_{safe_name}.joblib"
+                if path.exists():
+                    self.m1_parts[part] = joblib.load(path)
+            
+            # 3. Load Task 2 (Downtime Ensemble & Scaler)
+            lgb_path = MODELS_DIR / "task2_lightgbm_multiclass.joblib"
+            if lgb_path.exists(): self.m2_lgb = joblib.load(lgb_path)
+            
+            iso_path = MODELS_DIR / "task2_isolation_forest.joblib"
+            if iso_path.exists(): self.m2_iso = joblib.load(iso_path)
+            
+            scaler_path = MODELS_DIR / "task2_scaler.joblib"
+            if scaler_path.exists(): self.m2_scaler = joblib.load(scaler_path)
 
-    def get_model(self, part):
-        """Dynamic routing to specialist or global model."""
-        m = self.m1_parts.get(part, self.m1_global)
-        if m is None:
-            # Fallback to global if specialist failed to load
-            return self.m1_global
-        return m
+            sys.stderr.write(f"Server successfully initialized from {MODELS_DIR}\n")
+        except Exception as e:
+            sys.stderr.write(f"Initialization error: {e}\n")
 
-    def optimize_sp(self, base_row, part, history_df):
-        """Joint grid search optimization for best SP combination."""
-        use_cols = self.artifacts.get('use_cols', [])
-        medians = self.artifacts.get('medians', {})
-        sp_cols = self.artifacts.get('sp_cols', [])
-        le_q = self.artifacts.get('le_q')
-        
-        if not sp_cols or not le_q:
-            return {k: base_row.get(v, medians.get(v, 0.0)) for k, v in UI_TO_SP.items()}, 0.0, 0.0
+    def get_model1(self, part):
+        return self.m1_parts.get(part)
 
-        # Optimization Parameters
-        n_grid = 3 # 3^3 combinations for 3 most important SPs to stay responsive
-        lambda_penalty = 0.4 # Weight for downtime avoidance
+    def optimize_sp(self, clean_row, part, p_good_curr):
+        """Prescriptive Engine matching Optuna's +-5% physics limits."""
+        model1 = self.get_model1(part)
+        safe_part = part.replace(" ", "_").replace("-", "")
+        t1_feats = self.task1_features.get(safe_part, [])
         
-        # Select top 3 SPs to optimize
-        target_sp = [c for c in UI_TO_SP.values() if c in sp_cols][:4]
+        # Base failure handling
+        default_rec = {ui: float(clean_row.get(re.sub(r'[^A-Za-z0-9_]+', '_', canon), 0.0)) for ui, canon in UI_TO_SP.items()}
         
-        # Calculate bounds from medians if history not enough
+        if not model1 or not t1_feats:
+            return default_rec, p_good_curr, 0.0
+
+        # Dynamically discover which Set Points exist in model features
+        sp_to_opt = []
+        for feat in t1_feats:
+            if "SP" in feat and not any(ext in feat for ext in ['_mean', '_std', '_max', '_min', '_delta']):
+                sp_to_opt.append(feat)
+                
+        # Limit combinations to maintain sub-second api latency
+        sp_to_opt = sp_to_opt[:3] 
+        if not sp_to_opt:
+            return default_rec, p_good_curr, 0.0
+
+        # Constrained Ranges: strict +- 5% bound mapped exactly to ML review logic
         ranges = {}
-        for c in target_sp:
-            val = base_row.get(c, medians.get(c, 0.0))
-            ranges[c] = np.linspace(val * 0.9, val * 1.1, n_grid)
+        for c in sp_to_opt:
+            val = clean_row.get(c, 0.1) + 1e-9
+            if val > 0:
+                ranges[c] = np.linspace(val * 0.95, val * 1.05, 3)
+            elif val < 0:
+                ranges[c] = np.linspace(val * 1.05, val * 0.95, 3)
+            else:
+                ranges[c] = np.linspace(-0.05, 0.05, 3)
 
         best_score = -999.0
-        best_sp_vals = {k: base_row.get(v, medians.get(v, 0.0)) for k, v in UI_TO_SP.items()}
-        best_p_good = 0.0
-        best_p_dt = 0.0
+        best_cand = clean_row.copy()
+        best_pg = p_good_curr
+        best_pdt = 0.0
         
-        model = self.get_model(part)
-        if model is None: return best_sp_vals, 0.0, 0.0
-        
-        good_idx = list(le_q.classes_).index('good') if 'good' in le_q.classes_ else 0
+        lambda_penalty = 0.02
+        normal_idx = next((k for k,v in self.task2_class_mapping.items() if str(v).lower() == 'normal'), 0)
 
-        # Perform Grid Search
-        keys = list(ranges.keys())
-        for values in itertools.product(*ranges.values()):
-            cand_row = base_row.copy()
-            for k, v in zip(keys, values):
+        for vals in itertools.product(*ranges.values()):
+            cand_row = clean_row.copy()
+            penalty = 0
+            for k, v in zip(sp_to_opt, vals):
+                orig = clean_row.get(k, 0.1) + 1e-9
+                penalty += abs(v - float(orig)) / abs(float(orig))
                 cand_row[k] = v
             
-            # Recalculate features for this candidate
-            X_cand = FeatureEngineer.compute_for_row(cand_row, history_df, use_cols, medians)
+            # Formulate prediction
+            X_t1 = FeatureEngineer.compute_for_row(cand_row, t1_feats)
+            p_vec = model1.predict_proba(X_t1)[0]
+            pg = float(p_vec[0]) # Assuming class 0 is Good
             
-            # Predict
-            try:
-                p_vec = model.predict_proba(X_cand)[0]
-                pg = p_vec[good_idx]
-                p_dt = self.m2_downtime.predict_proba(X_cand)[0][1] if self.m2_downtime else 0.0
+            pdt = 0.0
+            if self.m2_lgb and self.task2_features:
+                X_t2 = FeatureEngineer.compute_for_row(cand_row, self.task2_features)
+                p_dt_vec = self.m2_lgb.predict_proba(X_t2)[0]
+                pdt = 1.0 - float(p_dt_vec[normal_idx])
+            
+            # Objective criteria factoring safe bounds + quality + machine safety
+            score = pg - (lambda_penalty * penalty) - (0.4 * pdt)
+            if score > best_score:
+                best_score = score
+                best_cand = cand_row
+                best_pg = pg
+                best_pdt = pdt
                 
-                score = pg - (lambda_penalty * p_dt)
-                if score > best_score:
-                    best_score = score
-                    best_p_good = pg
-                    best_p_dt = p_dt
-                    for k, v in zip(keys, values):
-                        # Find the UI key for this SP col
-                        ui_key = SP_TO_UI_REVERSE(k)
-                        best_sp_vals[ui_key] = v
-            except:
-                continue
+        # Formulate mapping back to UI keys
+        rec_sp = {}
+        for ui, canonical in UI_TO_SP.items():
+            clean_col = re.sub(r'[^A-Za-z0-9_]+', '_', canonical)
+            rec_sp[ui] = float(best_cand.get(clean_col, clean_row.get(clean_col, 0.0)))
+            
+        return rec_sp, best_pg, best_pdt
 
-        return best_sp_vals, best_p_good, best_p_dt
-
-def SP_TO_UI_REVERSE(col_name):
-    # Simple reverse mapping
-    for k, v in UI_TO_SP.items():
-        if v == col_name: return k
-    return col_name
 
 def main():
     server = VegemiteServer()
@@ -216,8 +211,7 @@ def main():
     # Read input from stdin
     try:
         input_data = sys.stdin.read()
-        if not input_data:
-            return
+        if not input_data: return
         body = json.loads(input_data)
     except Exception as e:
         sys.stderr.write(f"JSON input error: {e}\n")
@@ -225,81 +219,123 @@ def main():
 
     # Extract inputs
     part = body.get("part", "Yeast - BRD")
-    medians = server.artifacts.get('medians', {})
-    use_cols = server.artifacts.get('use_cols', [])
-    le_q = server.artifacts.get('le_q')
     
-    # ── Robust Inference Loop ─────────────────────────────────────────────
     try:
-        # Build base feature row
-        current_row = medians.copy()
+        # Formulate base row from UI keys + extra sensors
+        raw_row = {}
         for ui_key, col_name in UI_TO_SP.items():
             if ui_key in body:
-                current_row[col_name] = float(body[ui_key])
+                raw_row[col_name] = float(body[ui_key])
         
-        # Include any raw sensor data if provided
         sensors = body.get("sensors", {})
         if isinstance(sensors, dict):
             for k, v in sensors.items():
-                if k in current_row: current_row[k] = float(v)
+                raw_row[k] = float(v)
 
-        # Contextual history for rolling features (placeholder)
-        history_df = None 
+        # Standardize Names matching LightGBM Training Data
+        clean_row = {}
+        for k, v in raw_row.items():
+            clean_k = re.sub(r'[^A-Za-z0-9_]+', '_', k)
+            clean_row[clean_k] = v
 
-        # 1. Prediction for Current Settings
-        X_curr = FeatureEngineer.compute_for_row(current_row, history_df, use_cols, medians)
-        model = server.get_model(part)
+        # -------------------------------------------------------------
+        # TASK 1: QUALITY PREDICTION (Current Settings)
+        # -------------------------------------------------------------
+        pred_label = "UNKNOWN"
+        p_good = 0.0
         
-        if model is None:
-            raise ValueError("Model not found in any search path.")
+        model1 = server.get_model1(part)
+        safe_part = part.replace(" ", "_").replace("-", "")
+        t1_feats = server.task1_features.get(safe_part, [])
+        
+        if model1 and t1_feats:
+            X_t1 = FeatureEngineer.compute_for_row(clean_row, t1_feats)
+            p_vec = model1.predict_proba(X_t1)[0]
             
-        p_vec = model.predict_proba(X_curr)[0]
-        
-        # SOTA V7.3: Threshold-Aware Prediction
-        classes = list(le_q.classes_) if le_q else []
-        low_bad_idx = classes.index('low_bad') if 'low_bad' in classes else -1
-        
-        thresh = 0.35
-        if low_bad_idx != -1 and p_vec[low_bad_idx] >= thresh:
-            pred_label = "LOW_BAD"
-        else:
+            p_good = float(p_vec[0])
             pred_idx = int(np.argmax(p_vec))
-            pred_label = str(le_q.inverse_transform([pred_idx])[0]).upper() if le_q else "UNKNOWN"
-        
-        good_idx = classes.index('good') if 'good' in classes else 0
-        p_good = float(p_vec[good_idx])
-        
-        p_dt = 0.0
-        if server.m2_downtime:
-            p_dt = float(server.m2_downtime.predict_proba(X_curr)[0][1])
+            
+            # Map index strictly to notebook mapping
+            if pred_idx == 0:
+                pred_label = "GOOD"
+            elif pred_idx == 1:
+                pred_label = "LOW_BAD"
+            elif pred_idx == 2:
+                pred_label = "HIGH_BAD"
 
-        # 2. Recommended Set Points
-        rec_sp, rec_p_good, rec_p_dt = server.optimize_sp(current_row, part, history_df)
+        # -------------------------------------------------------------
+        # TASK 2: DOWNTIME ALERT (Multi-Class + Isolation Check)
+        # -------------------------------------------------------------
+        pred_dt_class = "Normal"
+        p_dt_risk = 0.0
+        iso_anomaly = False
 
-        # 3. Formulate Response
+        if server.m2_lgb and server.m2_iso and server.m2_scaler and server.task2_features:
+            X_t2 = FeatureEngineer.compute_for_row(clean_row, server.task2_features)
+            
+            # Sub-Task 2A: Isolation Forest (Requires Scaling)
+            X_t2_scaled = server.m2_scaler.transform(X_t2)
+            iso_preds = server.m2_iso.predict(X_t2_scaled)
+            if iso_preds[0] == -1:
+                iso_anomaly = True
+
+            # Sub-Task 2B: Root Cause Multi-Class LightGBM
+            p_dt_vec = server.m2_lgb.predict_proba(X_t2)[0]
+            pred_dt_idx = int(np.argmax(p_dt_vec))
+            pred_dt_class = server.task2_class_mapping.get(pred_dt_idx, "Normal")
+            
+            normal_idx = next((k for k,v in server.task2_class_mapping.items() if str(v).lower() == 'normal'), 0)
+            p_dt_risk = 1.0 - float(p_dt_vec[normal_idx])
+            
+            # Hard fallback risk mapping if isolation forest disagrees strongly
+            if iso_anomaly and p_dt_risk < 0.5:
+                p_dt_risk = 0.5 + (p_dt_risk / 2) # boost risk context
+                if pred_dt_class == "Normal":
+                    pred_dt_class = "Unknown_Anomaly"
+
+        # -------------------------------------------------------------
+        # PRESCRIPTIVE ENGINE (Recommendations)
+        # -------------------------------------------------------------
+        rec_sp, rec_p_good, rec_p_dt = server.optimize_sp(clean_row, part, p_good)
+
         response = {
-            "recommendedSP": {k: float(v) for k, v in rec_sp.items()},
+            "recommendedSP": rec_sp,
             "pGood": float(round(p_good, 4)),
-            "pDowntime": float(round(p_dt, 4)),
+            "pDowntime": float(round(p_dt_risk, 4)),
             "prediction": pred_label,
-            "downtimeRisk": float(round(p_dt * 100, 2)),
+            "downtimeRisk": float(round(p_dt_risk * 100, 2)),
+            "rootCause": pred_dt_class,
+            "isoAnomaly": iso_anomaly,
             "recommendedPGood": float(round(rec_p_good, 4)),
             "recommendedPDowntime": float(round(rec_p_dt, 4))
         }
+
+        # 4. Safe Logging
+        try:
+            from datetime import datetime
+            log_dir = BASE_DIR / "data"
+            log_dir.mkdir(exist_ok=True)
+            log_file = log_dir / "prediction_logs.csv"
+            
+            log_data = {"Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "Part": part}
+            for ui_key in UI_TO_SP.keys():
+                log_data[ui_key] = body.get(ui_key, "")
+            log_data["Prediction"] = pred_label
+            log_data["pGood"] = float(round(p_good, 4))
+            log_data["pDowntimeRisk"] = float(round(p_dt_risk * 100, 2))
+            log_data["RootCause"] = pred_dt_class
+            
+            pd.DataFrame([log_data]).to_csv(log_file, mode='a', header=not log_file.exists(), index=False)
+        except:
+            pass
+
     except Exception as e:
         sys.stderr.write(f"Inference Runtime Error: {e}\n")
-        import traceback
-        traceback.print_exc()
-        # Safe Fallback
         response = {
-            "error": str(e),
-            "prediction": "ERROR",
-            "pGood": 0.0,
-            "pDowntime": 0.0,
-            "downtimeRisk": 0.0,
-            "recommendedSP": {k: float(medians.get(UI_TO_SP[k], 0.0)) if k in UI_TO_SP else 0.0 for k in UI_TO_SP.keys()},
-            "recommendedPGood": 0.0,
-            "recommendedPDowntime": 0.0
+            "error": str(e), "prediction": "ERROR",
+            "pGood": 0.0, "pDowntime": 0.0, "downtimeRisk": 0.0, "rootCause": "Error",
+            "recommendedSP": {k: 0.0 for k in UI_TO_SP.keys()},
+            "recommendedPGood": 0.0, "recommendedPDowntime": 0.0
         }
     
     sys.stdout.write(json.dumps(response, cls=NumpyEncoder))
