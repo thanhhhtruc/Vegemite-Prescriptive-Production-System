@@ -96,10 +96,12 @@ const CRITICAL_DRIVERS: Record<string, string[]> = {
   'default':     ['FFTE Feed flow rate PV', 'FFTE Heat temperature 1', 'FFTE Production solids SP', 'FFTE Discharge density']
 }
 
-export async function GET() {
+export async function GET(req: Request) {
   try {
+    const { searchParams } = new URL(req.url)
+    const stepParam = searchParams.get('step')
     const rows = loadData()
-    const STEP = 80  // advance 80 rows per tick to finish batch in ~5s (2s/tick)
+    const STEP = stepParam ? parseInt(stepParam) : 80
     
     // Safety check just in case cursor is way out
     if (cursor >= rows.length) cursor = 0

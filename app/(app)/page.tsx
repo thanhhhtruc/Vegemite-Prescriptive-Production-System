@@ -30,29 +30,29 @@ const SP_KEYS: SPKey[] = [
 const RECIPE_BASELINES: Record<string, Omit<AllSPInputs, 'part' | 'extractTankLevel'>> = {
   "Yeast - FMX": {
     "ffteFeedSolidsSP": 50.0,
-    "ffteProductionSolidsSP": 41.5,
-    "ffteSteamPressureSP": 120.0,
-    "tfeOutFlowSP": 2850.0,
-    "tfeProductionSolidsSP": 67.0,
-    "tfeVacuumPressureSP": -60.0,
+    "ffteProductionSolidsSP": 42.9,
+    "ffteSteamPressureSP": 115.0,
+    "tfeOutFlowSP": 2897.65,
+    "tfeProductionSolidsSP": 71.0,
+    "tfeVacuumPressureSP": -62.66,
     "tfeSteamPressureSP": 120.0
   },
   "Yeast - BRD": {
     "ffteFeedSolidsSP": 50.0,
-    "ffteProductionSolidsSP": 39.0,
-    "ffteSteamPressureSP": 110.0,
-    "tfeOutFlowSP": 2350.0,
-    "tfeProductionSolidsSP": 65.0,
-    "tfeVacuumPressureSP": -65.0,
+    "ffteProductionSolidsSP": 41.66,
+    "ffteSteamPressureSP": 119.0,
+    "tfeOutFlowSP": 2174.46,
+    "tfeProductionSolidsSP": 63.0,
+    "tfeVacuumPressureSP": -74.62,
     "tfeSteamPressureSP": 120.0
   },
   "Yeast - BRN": {
     "ffteFeedSolidsSP": 50.0,
-    "ffteProductionSolidsSP": 42.0,
-    "ffteSteamPressureSP": 118.0,
-    "tfeOutFlowSP": 2180.0,
+    "ffteProductionSolidsSP": 41.5,
+    "ffteSteamPressureSP": 120.0,
+    "tfeOutFlowSP": 2081.93,
     "tfeProductionSolidsSP": 65.0,
-    "tfeVacuumPressureSP": -75.0,
+    "tfeVacuumPressureSP": -71.62,
     "tfeSteamPressureSP": 120.0
   }
 }
@@ -80,8 +80,8 @@ type LiveDataRow = {
   batch: string
 }
 
-async function fetchLiveRow(): Promise<LiveDataRow> {
-  const res = await fetch('/api/live-data')
+async function fetchLiveRow(step: number = 80): Promise<LiveDataRow> {
+  const res = await fetch(`/api/live-data?step=${step}`)
   if (!res.ok) throw new Error(await res.text())
   return res.json() as Promise<LiveDataRow>
 }
@@ -105,6 +105,7 @@ export default function DashboardPage() {
   const isManualModeRef = useRef(false)
   const [initialized, setInitialized] = useState(false)
   const [result, setResult] = useState<InferenceResult | null>(null)
+  const resultRef = useRef<InferenceResult | null>(null)
   const [liveRow, setLiveRow] = useState<LiveDataRow | null>(null)
   const [processState, setProcessState] = useState<'RUNNING' | 'CHANGEOVER' | 'READY' | 'HALTED'>('RUNNING')
   const [cipProgress, setCipProgress] = useState(0)
@@ -118,6 +119,7 @@ export default function DashboardPage() {
       const sensors = sensorsOverride ?? liveRow?.sensors
       const r = await runInference(sp, sensors)
       setResult(r)
+      resultRef.current = r
       setInitialized(true)
       setLastUpdated(new Date())
       return r
@@ -141,7 +143,7 @@ export default function DashboardPage() {
     const r = await infer(newInputs, sensors)
     
     // Auto-resume if user manually overrides during HALTED state and it's resolved
-    if (processStateRef.current === 'HALTED' && r && r.downtimeRisk < 80) {
+    if (processStateRef.current === 'HALTED' && r && r.downtimeRisk < 30) {
       processStateRef.current = 'RUNNING'
       setProcessState('RUNNING')
     }
@@ -161,7 +163,7 @@ export default function DashboardPage() {
     const r = await infer(sp, sensors)
 
     // Auto-resume if recommended settings resolve the halting condition
-    if (processStateRef.current === 'HALTED' && r && r.downtimeRisk < 80) {
+    if (processStateRef.current === 'HALTED' && r && r.downtimeRisk < 30) {
       processStateRef.current = 'RUNNING'
       setProcessState('RUNNING')
     }
@@ -175,13 +177,16 @@ export default function DashboardPage() {
     const tick = async () => {
       if (!isSubscribed) return
       
+      // Auto-pause when entering Manual Mode
       if (isManualModeRef.current || processStateRef.current !== 'RUNNING') {
-        timeoutId = setTimeout(tick, 5000)
+        timeoutId = setTimeout(tick, 2000)
         return
       }
 
       try {
-        const row = await fetchLiveRow()
+        const isRisky = resultRef.current && resultRef.current.downtimeRisk > 15
+        const stepSize = isRisky ? 10 : 80
+        const row = await fetchLiveRow(stepSize)
         
         // Detect if the batch has changed
         if (currentBatchRef.current && currentBatchRef.current !== row.batch) {
@@ -229,7 +234,7 @@ export default function DashboardPage() {
         inputsRef.current = sp
         const inferredResult = await infer(sp, row.sensors)
 
-        if (inferredResult && inferredResult.downtimeRisk >= 80) {
+        if (inferredResult && inferredResult.downtimeRisk >= 30) {
           processStateRef.current = 'HALTED'
           setProcessState('HALTED')
         }
@@ -237,7 +242,7 @@ export default function DashboardPage() {
         console.error('Live data fetch failed:', e)
       }
 
-      timeoutId = setTimeout(tick, 5000)
+      timeoutId = setTimeout(tick, 3500)
     }
 
     void tick()

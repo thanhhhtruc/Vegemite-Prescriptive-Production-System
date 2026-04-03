@@ -294,11 +294,11 @@ class VegemiteServer:
         # =================================================================
         # If machine is at high risk of failure (>= 80%) or batch is severely degrading, allow wider limits
         if p_dt_curr >= 0.80 or p_good_curr < 0.15:
-            base_deviation = 0.15  # High risk -> AI allowed to intervene up to 15%
+            base_deviation = 0.50  # High risk -> AI allowed to intervene up to 50%
         elif p_good_curr < 0.40 or p_dt_curr >= 0.40:
-            base_deviation = 0.10  # Medium risk -> Release bound to 10%
+            base_deviation = 0.30  # Medium risk -> Release bound to 30%
         else:
-            base_deviation = 0.05  # Slight deviation -> Tighten safety bound to 5%
+            base_deviation = 0.15  # Slight deviation -> Tighten safety bound to 15%
 
         best_cand = clean_row.copy()
         requires_manual_review = False # UI flag for manual review
@@ -308,25 +308,30 @@ class VegemiteServer:
             new_val = raw_rec_sp_values[idx]
             
             #  SAFETY PROTOCOL 3: SENSOR-SPECIFIC RULES (Physics-based)
+            # Dựa trên phân tích dao động thực tế (Good vs Bad) để gán margin chuẩn
             col_lower = sp_col.lower()
             if "temperature" in col_lower or "heat" in col_lower:
-                allowed_dev = min(base_deviation, 0.05) 
-                margin = max(np.abs(orig_val) * allowed_dev, 0.5)
+                allowed_dev = min(base_deviation, 0.15) 
+                margin = max(np.abs(orig_val) * allowed_dev, 2.0)
             elif "flow" in col_lower or "speed" in col_lower:
-                allowed_dev = min(base_deviation * 1.5, 0.20)
-                margin = max(np.abs(orig_val) * allowed_dev, 1.0)
+                allowed_dev = min(base_deviation * 1.5, 0.40)
+                margin = max(np.abs(orig_val) * allowed_dev, 200.0) # Thực tế dao động ~200
             elif "vacuum" in col_lower:
-                # FIX: Vacuum Pressure fluctuates in wide range (negative to positive)
-                # Allow AI to adjust valve with extreme force (hard margin = 40.0) to rescue machine
                 allowed_dev = base_deviation * 2.0
-                margin = max(np.abs(orig_val) * allowed_dev, 40.0) 
+                margin = max(np.abs(orig_val) * allowed_dev, 15.0)  # Thực tế dao động ~15
             elif "pressure" in col_lower:
-                # Normal positive pressure (like Steam Pressure) keeps moderate margin
                 allowed_dev = base_deviation
-                margin = max(np.abs(orig_val) * allowed_dev, 10.0)
+                margin = max(np.abs(orig_val) * allowed_dev, 20.0)  # Thực tế steam pressure dao động ~20
+            elif "ffte production solids" in col_lower:
+                # Chỉ số này rất khắt khe, chênh lệch thực tế cực nhỏ (std ~0.5)
+                allowed_dev = min(base_deviation, 0.02)
+                margin = max(np.abs(orig_val) * allowed_dev, 0.5)
+            elif "tfe production solids" in col_lower:
+                allowed_dev = base_deviation
+                margin = max(np.abs(orig_val) * allowed_dev, 10.0) # Thực tế dao động ~10
             else:
                 allowed_dev = base_deviation
-                margin = max(np.abs(orig_val) * allowed_dev, 0.5)
+                margin = max(np.abs(orig_val) * allowed_dev, 7.0)  # Mặc định (như Feed solids std ~7)
             
             # Clip values to safety bounds
             bound_lower = orig_val - margin
@@ -725,9 +730,47 @@ def main():
                                 pred_dt_classes.append("TFE_Shutdown")
                         elif stage2_fallback not in pred_dt_classes:
                             pred_dt_classes.append(stage2_fallback)
+                elif calibrated_risk >= 0.20:
+                    warning_msg = f"{machine} Degrading (Moderate Risk)"
+                    try:
+                        if machine == "TFE":
+                            tfe_steam = float(buffer_df_t2['TFE_Steam_pressure_PV'].iloc[-1]) if 'TFE_Steam_pressure_PV' in buffer_df_t2.columns else 120.0
+                            tfe_vac = float(buffer_df_t2['TFE_Vacuum_pressure_PV'].iloc[-1]) if 'TFE_Vacuum_pressure_PV' in buffer_df_t2.columns else -65.0
+                            tfe_outflow = float(buffer_df_t2['TFE_Out_flow_PV'].iloc[-1]) if 'TFE_Out_flow_PV' in buffer_df_t2.columns else 2000.0
+                            tfe_prod_solids = float(buffer_df_t2['TFE_Production_solids_PV'].iloc[-1]) if 'TFE_Production_solids_PV' in buffer_df_t2.columns else 70.0
+                            
+                            if tfe_steam > 128.0:
+                                warning_msg = "TFE Degrading: Reduce Steam Pressure SP"
+                            elif tfe_vac > -30.0:
+                                warning_msg = "TFE Degrading: Decrease Vacuum Pressure (Make more negative)"
+                            elif tfe_outflow < 1700.0 or tfe_outflow > 2950.0:
+                                warning_msg = "TFE Degrading: Adjust Outflow SP to Safe Range"
+                            elif tfe_prod_solids > 75.0:
+                                warning_msg = "TFE Degrading: Decrease Production Solids SP"
+                            elif tfe_prod_solids < 65.0:
+                                warning_msg = "TFE Degrading: Increase Production Solids SP"
+                            else:
+                                warning_msg = "TFE Degrading: Review AI Recommender SP"
+
+                        elif machine == "FFTE":
+                            ffte_steam = float(buffer_df_t2['FFTE_Steam_pressure_PV'].iloc[-1]) if 'FFTE_Steam_pressure_PV' in buffer_df_t2.columns else 130.0
+                            ffte_prod_solids = float(buffer_df_t2['FFTE_Production_solids_PV'].iloc[-1]) if 'FFTE_Production_solids_PV' in buffer_df_t2.columns else 60.0
+                            
+                            if ffte_steam > 140.0:
+                                warning_msg = "FFTE Degrading: Reduce Steam Pressure SP"
+                            elif ffte_prod_solids > 65.0:
+                                warning_msg = "FFTE Degrading: Reduce Production Solids SP"
+                            else:
+                                warning_msg = "FFTE Degrading: Check Feed Solids SP"
+                    except Exception:
+                        pass
+
+                    if warning_msg not in pred_dt_classes:
+                        pred_dt_classes.append(warning_msg)
 
         if not pred_dt_classes:
             pred_dt_classes = ["Normal"]
+
 
 
         # -------------------------------------------------------------

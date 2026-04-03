@@ -147,7 +147,7 @@ export function StatusCard({ prediction, confidence, downtimeRisk, rootCause, is
               <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground flex justify-between">
                 <span>Downtime Risk</span>
                 {rootCause && rootCause.filter(c => c !== 'Normal').length > 0 && (
-                  <span className="text-destructive animate-pulse font-bold text-right text-[10px] break-words max-w-[60%]">
+                  <span className="text-destructive font-bold text-right text-[10px] break-words max-w-[60%]">
                     ⚠️ {rootCause.filter(c => c !== 'Normal').map(c => c.replace(/_/g, ' ')).join(' | ')}
                   </span>
                 )}
