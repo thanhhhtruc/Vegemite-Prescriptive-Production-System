@@ -10,7 +10,7 @@ import {
   User,
   LogOut,
   MoreHorizontal,
-  Table,
+  Table, Activity,
 } from 'lucide-react'
 import {
   Sidebar,
@@ -72,7 +72,7 @@ export function AppSidebar() {
               <SidebarMenuItem>
                 <SidebarMenuButton tooltip="Dashboard" isActive={pathname === '/'} asChild>
                   <Link href="/">
-                    <LayoutDashboard className="size-4" />
+                    <Activity className="size-4" />
                     <span>Dashboard</span>
                   </Link>
                 </SidebarMenuButton>
@@ -82,6 +82,14 @@ export function AppSidebar() {
                   <Link href="/data">
                     <Table className="size-4" />
                     <span>Data</span>
+                  </Link>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+              <SidebarMenuItem>
+                <SidebarMenuButton tooltip="History Results" isActive={pathname === '/history'} asChild>
+                  <Link href="/history">
+                    <Activity className="size-4" />
+                    <span>History Results</span>
                   </Link>
                 </SidebarMenuButton>
               </SidebarMenuItem>

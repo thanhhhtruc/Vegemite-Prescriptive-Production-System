@@ -777,6 +777,9 @@ def main():
         # PRESCRIPTIVE ENGINE (Recommendations)
         # -------------------------------------------------------------
         rec_sp, rec_p_good, rec_p_dt, review_flag = server.optimize_sp(buffer_df, part, p_good, p_dt_risk)
+        
+        # Round the recommended Setpoints to 2 decimal places
+        rec_sp = {k: float(round(v, 2)) for k, v in rec_sp.items()}
 
         response = {
             "recommendedSP": rec_sp,
@@ -798,13 +801,23 @@ def main():
             log_dir.mkdir(exist_ok=True)
             log_file = log_dir / "prediction_logs.csv"
             
-            log_data = {"Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "Part": part}
+            log_data = {
+                "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 
+                "Part": part,
+                "Mode": body.get("mode", "Auto")
+            }
             for ui_key in UI_TO_SP.keys():
-                log_data[ui_key] = body.get(ui_key, "")
+                val = body.get(ui_key, "")
+                if isinstance(val, (int, float)):
+                    log_data[ui_key] = float(round(val, 2))
+                else:
+                    log_data[ui_key] = val
             log_data["Prediction"] = pred_label
             log_data["pGood"] = float(round(p_good, 4))
             log_data["pDowntimeRisk"] = float(round(p_dt_risk * 100, 2))
             log_data["RootCause"] = " | ".join(pred_dt_classes)
+            log_data["rec_pGood"] = float(round(rec_p_good, 4))
+            log_data["rec_pDowntimeRisk"] = float(round(rec_p_dt * 100, 2))
             
             pd.DataFrame([log_data]).to_csv(log_file, mode='a', header=not log_file.exists(), index=False)
         except:

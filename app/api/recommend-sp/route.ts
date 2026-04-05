@@ -15,6 +15,7 @@ export type RecommendSpBody = {
   part?: string
   // Real sensor PV values from live data (optional, defaults to medians if missing)
   sensors?: Record<string, number>
+  mode?: 'Auto' | 'Manual'
 }
 
 export type RecommendSpResponse = {
@@ -59,6 +60,7 @@ export async function POST(request: NextRequest) {
       tfeSteamPressureSP: body.tfeSteamPressureSP,
       part: body.part ?? 'Yeast - BRD',
       sensors: body.sensors ?? {},
+      mode: body.mode ?? 'Auto',
     })
 
     const result: RecommendSpResponse = await new Promise((resolve, reject) => {
@@ -104,6 +106,8 @@ export async function POST(request: NextRequest) {
         pGood: result.pGood,
         pDowntime: result.pDowntime,
         downtimeRisk: result.downtimeRisk,
+        recPGood: result.recommendedPGood,
+        recPDowntimeRisk: result.recommendedPDowntime * 100, // percentage
         recommended: {
           ffteFeedSolidsSP: result.recommendedSP.ffteFeedSolidsSP,
           ffteProductionSolidsSP: result.recommendedSP.ffteProductionSolidsSP,

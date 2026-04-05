@@ -86,13 +86,13 @@ async function fetchLiveRow(step: number = 80): Promise<LiveDataRow> {
   return res.json() as Promise<LiveDataRow>
 }
 
-async function runInference(sp: AllSPInputs, sensors?: Record<string, number>): Promise<InferenceResult> {
-  const body = { ...sp, sensors }
-  const res = await fetch('/api/recommend-sp', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  })
+  async function runInference(sp: AllSPInputs, sensors?: Record<string, number>, mode: 'Auto' | 'Manual' = 'Auto'): Promise<InferenceResult> {
+    const body = { ...sp, sensors, mode }
+    const res = await fetch('/api/recommend-sp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
   if (!res.ok) throw new Error(await res.text())
   return res.json() as Promise<InferenceResult>
 }
@@ -113,11 +113,11 @@ export default function DashboardPage() {
   const currentBatchRef = useRef<string | null>(null)
   const processStateRef = useRef<'RUNNING' | 'CHANGEOVER' | 'READY' | 'HALTED'>('RUNNING')
 
-  async function infer(sp: AllSPInputs, sensorsOverride?: Record<string, number>) {
+  async function infer(sp: AllSPInputs, sensorsOverride?: Record<string, number>, mode: 'Auto' | 'Manual' = 'Auto') {
     try {
       // Use sensors from liveRow if not explicitly provided (e.g. in tick)
       const sensors = sensorsOverride ?? liveRow?.sensors
-      const r = await runInference(sp, sensors)
+      const r = await runInference(sp, sensors, mode)
       setResult(r)
       resultRef.current = r
       setInitialized(true)
@@ -140,7 +140,7 @@ export default function DashboardPage() {
     if (newInputs.extractTankLevel !== undefined) {
       sensors['Extract tank Level'] = newInputs.extractTankLevel
     }
-    const r = await infer(newInputs, sensors)
+    const r = await infer(newInputs, sensors, 'Manual')
     
     // Auto-resume if user manually overrides during HALTED state and it's resolved
     if (processStateRef.current === 'HALTED' && r && r.downtimeRisk < 30) {
@@ -185,7 +185,7 @@ export default function DashboardPage() {
 
       try {
         const isRisky = resultRef.current && resultRef.current.downtimeRisk > 15
-        const stepSize = isRisky ? 10 : 80
+        const stepSize = isRisky ? 5 : 20 
         const row = await fetchLiveRow(stepSize)
         
         // Detect if the batch has changed
@@ -199,20 +199,19 @@ export default function DashboardPage() {
           // Clear buffer in backend
           await fetch('/api/reset-buffer', { method: 'POST' })
 
-          // Simulate CIP progress over ~3 seconds
+          // Simulate CIP progress over ~1 second (Quick clean to skip dead time)
           let p = 0
           const cipInterval = setInterval(() => {
-            p += 10
+            p += 20
             setCipProgress(p)
             if (p >= 100) {
               clearInterval(cipInterval)
               currentBatchRef.current = row.batch
-              // Tự động vào luôn RUNNING thay vì bắt đợi READY
               processStateRef.current = 'RUNNING'
               setProcessState('RUNNING')
-              timeoutId = setTimeout(tick, 1000)
+              timeoutId = setTimeout(tick, 500)
             }
-          }, 300)
+          }, 200)
           return
         }
 
@@ -242,7 +241,8 @@ export default function DashboardPage() {
         console.error('Live data fetch failed:', e)
       }
 
-      timeoutId = setTimeout(tick, 3500)
+      // Giảm thời gian chờ xuống 2s để demo mượt mà, nhưng không quá nhanh để vẫn kịp đọc số liệu
+      timeoutId = setTimeout(tick, 2000)
     }
 
     void tick()

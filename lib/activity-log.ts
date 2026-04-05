@@ -12,6 +12,8 @@ export type InferenceEvent = {
   pGood: number        // 0.0–1.0
   pDowntime: number    // 0.0–1.0
   downtimeRisk: number // 0–100
+  recPGood: number
+  recPDowntimeRisk: number
   recommended: {
     ffteFeedSolidsSP: number
     ffteProductionSolidsSP: number
